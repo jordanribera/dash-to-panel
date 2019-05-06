@@ -132,7 +132,6 @@ var taskbarAppIcon = Utils.defineClass({
         this.callParent('_init', appInfo.app, iconParams);
 
         this._dot.set_width(0);
-        this._focused = tracker.focus_app == this.app;
         this._isGroupApps = this._dtpSettings.get_boolean('group-apps');
 
         this._container = new St.Widget({ style_class: 'dtp-container', layout_manager: new Clutter.BinLayout() });
@@ -181,9 +180,16 @@ var taskbarAppIcon = Utils.defineClass({
         this._focusWindowChangedId = global.display.connect('notify::focus-window', 
                                                             Lang.bind(this, this._onFocusAppChanged));
 
+        this._windowEnteredMonitorId = this._windowLeftMonitorId = 0;
+
         if (!this.window) {
             this._stateChangedId = this.app.connect('windows-changed',
                                                 Lang.bind(this, this.onWindowsChanged));
+
+            if (this._dtpSettings.get_boolean('isolate-monitors')) {
+                this._windowEnteredMonitorId = Utils.DisplayWrapper.getScreen().connect('window-entered-monitor', this.onWindowEnteredOrLeft.bind(this));
+                this._windowLeftMonitorId = Utils.DisplayWrapper.getScreen().connect('window-left-monitor', this.onWindowEnteredOrLeft.bind(this));
+            }
             
             this._titleWindowChangeId = 0;
         } else {
@@ -202,6 +208,7 @@ var taskbarAppIcon = Utils.defineClass({
             this._dtpSettings.connect('changed::dot-size', Lang.bind(this, this._updateDotSize)),
             this._dtpSettings.connect('changed::dot-style-focused', Lang.bind(this, this._settingsChangeRefresh)),
             this._dtpSettings.connect('changed::dot-style-unfocused', Lang.bind(this, this._settingsChangeRefresh)),
+            this._dtpSettings.connect('changed::dot-color-dominant', Lang.bind(this, this._settingsChangeRefresh)),
             this._dtpSettings.connect('changed::dot-color-override', Lang.bind(this, this._settingsChangeRefresh)),
             this._dtpSettings.connect('changed::dot-color-1', Lang.bind(this, this._settingsChangeRefresh)),
             this._dtpSettings.connect('changed::dot-color-2', Lang.bind(this, this._settingsChangeRefresh)),
@@ -213,6 +220,7 @@ var taskbarAppIcon = Utils.defineClass({
             this._dtpSettings.connect('changed::dot-color-unfocused-3', Lang.bind(this, this._settingsChangeRefresh)),
             this._dtpSettings.connect('changed::dot-color-unfocused-4', Lang.bind(this, this._settingsChangeRefresh)),
             this._dtpSettings.connect('changed::focus-highlight', Lang.bind(this, this._settingsChangeRefresh)),
+            this._dtpSettings.connect('changed::focus-highlight-dominant', Lang.bind(this, this._settingsChangeRefresh)),
             this._dtpSettings.connect('changed::focus-highlight-color', Lang.bind(this, this._settingsChangeRefresh)),
             this._dtpSettings.connect('changed::focus-highlight-opacity', Lang.bind(this, this._settingsChangeRefresh)),
             this._dtpSettings.connect('changed::group-apps-label-font-size', Lang.bind(this, this._updateWindowTitleStyle)),
@@ -342,6 +350,11 @@ var taskbarAppIcon = Utils.defineClass({
 
         if(this._titleWindowChangeId)
             this.window.disconnect(this._titleWindowChangeId);
+
+        if (this._windowEnteredMonitorId) {
+            Utils.DisplayWrapper.getScreen().disconnect(this._windowEnteredMonitorId);
+            Utils.DisplayWrapper.getScreen().disconnect(this._windowLeftMonitorId);
+        }
         
         if(this._switchWorkspaceId)
             global.window_manager.disconnect(this._switchWorkspaceId);
@@ -359,8 +372,15 @@ var taskbarAppIcon = Utils.defineClass({
         this.updateIcon();
     },
 
+    onWindowEnteredOrLeft: function() {
+        if (this._checkIfFocusedApp()) {
+            this._updateCounterClass();
+            this._displayProperIndicator();
+        }
+    },
+
     // Update indicator and target for minimization animation
-    updateIcon: function(updateIndicators) {
+    updateIcon: function() {
 
         // If (for unknown reason) the actor is not on the stage the reported size
         // and position are random values, which might exceeds the integer range
@@ -378,10 +398,6 @@ var taskbarAppIcon = Utils.defineClass({
         windows.forEach(function(w) {
             w.set_icon_geometry(rect);
         });
-
-        if (updateIndicators) {
-            this._displayProperIndicator();
-        }
     },
 
     _showDots: function() {
@@ -487,7 +503,7 @@ var taskbarAppIcon = Utils.defineClass({
         let inlineStyle = 'margin: 0;';
 
         if(this._dtpSettings.get_boolean('focus-highlight') && 
-           tracker.focus_app == this.app && !this.isLauncher &&  
+           this._checkIfFocusedApp() && !this.isLauncher &&  
            (!this.window || isFocused) && !this._isThemeProvidingIndicator() && this._checkIfMonitorHasFocus()) {
             let focusedDotStyle = this._dtpSettings.get_string('dot-style-focused');
             let isWide = this._isWideDotStyle(focusedDotStyle);
@@ -509,8 +525,8 @@ var taskbarAppIcon = Utils.defineClass({
                 }
             }
 
-            inlineStyle += "background-color: " + cssHexTocssRgba(this._dtpSettings.get_string('focus-highlight-color'), 
-                                                                  this._dtpSettings.get_int('focus-highlight-opacity') * 0.01);
+            let highlightColor = this._getFocusHighlightColor();
+            inlineStyle += "background-color: " + cssHexTocssRgba(highlightColor, this._dtpSettings.get_int('focus-highlight-opacity') * 0.01);
         }
         
         if(this._dotsContainer.get_style() != inlineStyle) {
@@ -522,6 +538,10 @@ var taskbarAppIcon = Utils.defineClass({
                 Mainloop.timeout_add(0, Lang.bind(this, function() { this._dotsContainer.set_style(inlineStyle); }));
             }
         }
+    },
+
+    _checkIfFocusedApp: function() {
+        return tracker.focus_app == this.app;
     },
 
     _checkIfMonitorHasFocus: function() {
@@ -623,7 +643,7 @@ var taskbarAppIcon = Utils.defineClass({
             let newUnfocusedDotsWidth = 0;
             let newUnfocusedDotsOpacity = 0;
             
-            isFocused = (tracker.focus_app == this.app) && this._checkIfMonitorHasFocus();
+            isFocused = this._checkIfFocusedApp() && this._checkIfMonitorHasFocus();
 
             Mainloop.timeout_add(0, () => {
                 if (!this._destroyed) {
@@ -786,7 +806,7 @@ var taskbarAppIcon = Utils.defineClass({
             } else {
                 //grouped application behaviors
                 let monitor = this.panelWrapper.monitor;
-                let appHasFocus = tracker.focus_app == this.app && this._checkIfMonitorHasFocus();
+                let appHasFocus = this._checkIfFocusedApp() && this._checkIfMonitorHasFocus();
 
                 switch (buttonAction) {
                     case "RAISE":
@@ -922,8 +942,21 @@ var taskbarAppIcon = Utils.defineClass({
 
     _getRunningIndicatorColor: function(isFocused) {
         let color;
+        const fallbackColor = new Clutter.Color({ red: 82, green: 148, blue: 226, alpha: 255 });
 
-        if(this._dtpSettings.get_boolean('dot-color-override')) {
+        if (this._dtpSettings.get_boolean('dot-color-dominant')) {
+            let dce = new Utils.DominantColorExtractor(this.app);
+            let palette = dce._getColorPalette();
+            if (palette) {
+                color = Clutter.color_from_string(palette.original)[1];
+            } else { // unable to determine color, fall back to theme
+                let themeNode = this._dot.get_theme_node();
+                color = themeNode.get_background_color();
+
+                // theme didn't provide one, use a default
+                if(color.alpha == 0) color = fallbackColor;
+            }
+        } else if(this._dtpSettings.get_boolean('dot-color-override')) {
             let dotColorSettingPrefix = 'dot-color-';
             
             if(!isFocused && this._dtpSettings.get_boolean('dot-color-unfocused-different'))
@@ -936,11 +969,20 @@ var taskbarAppIcon = Utils.defineClass({
             let themeNode = this._dot.get_theme_node();
             color = themeNode.get_background_color();
 
-            if(color.alpha == 0) // theme didn't provide one, use a default
-                color = new Clutter.Color({ red: 82, green: 148, blue: 226, alpha: 255 });
+            // theme didn't provide one, use a default
+            if(color.alpha == 0) color = fallbackColor;
         }
 
         return color;
+    },
+
+    _getFocusHighlightColor: function() {
+        if (this._dtpSettings.get_boolean('focus-highlight-dominant')) {
+            let dce = new Utils.DominantColorExtractor(this.app);
+            let palette = dce._getColorPalette();
+            if (palette) return palette.original;
+        }
+        return this._dtpSettings.get_string('focus-highlight-color');
     },
 
     _drawRunningIndicator: function(area, type, isFocused) {

@@ -77,7 +77,7 @@ var dtpPanelManager = Utils.defineClass({
                 if (monitor == dtpPrimaryMonitor)
                     return;
 
-                let panelBox = new St.BoxLayout({ name: 'dashtopanelSecondaryPanelBox', vertical: true });
+                let panelBox = new St.BoxLayout({ name: 'panelBox', vertical: true });
                 Main.layoutManager.addChrome(panelBox, { affectsStruts: true, trackFullscreen: true });
 
                 let panel = new Panel.dtpSecondaryPanel(this._dtpSettings, monitor);
@@ -140,9 +140,9 @@ var dtpPanelManager = Utils.defineClass({
         this._oldGetShowAppsButton = Main.overview.getShowAppsButton;
         Main.overview.getShowAppsButton = this._newGetShowAppsButton.bind(this);
         
-        this.needsDashItemContainerAllocate = !Dash.DashItemContainer.prototype.hasOwnProperty('vfunc_allocate');
+        this._needsDashItemContainerAllocate = !Dash.DashItemContainer.prototype.hasOwnProperty('vfunc_allocate');
 
-        if (this.needsDashItemContainerAllocate) {
+        if (this._needsDashItemContainerAllocate) {
             Utils.hookVfunc(Dash.DashItemContainer.prototype, 'allocate', this._newDashItemContainerAllocate);
         }
             
@@ -239,7 +239,7 @@ var dtpPanelManager = Utils.defineClass({
             Main.layoutManager.panelBox.set_size(Main.layoutManager.primaryMonitor.width, -1);
         }
 
-        if (this.needsDashItemContainerAllocate) {
+        if (this._needsDashItemContainerAllocate) {
             Utils.hookVfunc(Dash.DashItemContainer.prototype, 'allocate', function(box, flags) { this.vfunc_allocate(box, flags); });
         }
     },
